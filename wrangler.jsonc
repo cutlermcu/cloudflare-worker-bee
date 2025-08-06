@@ -9,7 +9,7 @@
   "vars": {
     "NODE_ENV": "production"
   },
-  "node_compat": true,
+  "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true
   }
