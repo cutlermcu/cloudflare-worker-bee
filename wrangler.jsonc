@@ -9,7 +9,13 @@
   "vars": {
     "NODE_ENV": "production"
   },
-  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "wlwv-calendar",
+      "database_id": "d4a3f982-f9d7-465b-a5a9-a8cae69cfb90"
+    }
+  ],
   "observability": {
     "enabled": true
   }
