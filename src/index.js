@@ -1,5 +1,3 @@
-import { Pool } from 'pg';
-
 // Helper function to format dates consistently
 function formatDate(dateInput) {
     if (!dateInput) return null;
@@ -40,35 +38,6 @@ function corsResponse(response = null, status = 200) {
     return new Response(null, { status, headers });
 }
 
-// Database connection pool (global)
-let pool = null;
-
-function initializePool(env) {
-    if (!pool && env.DATABASE_URL) {
-        pool = new Pool({
-            connectionString: env.DATABASE_URL,
-            ssl: { rejectUnauthorized: false },
-            connectionTimeoutMillis: 10000,
-            idleTimeoutMillis: 30000,
-            max: 20,
-            min: 5
-        });
-    }
-    return pool;
-}
-
-function ensurePoolExists(env) {
-    if (!pool) {
-        if (env.DATABASE_URL) {
-            pool = initializePool(env);
-            console.log('Database pool created');
-        } else {
-            throw new Error('No database URL available');
-        }
-    }
-    return pool;
-}
-
 export default {
     async fetch(request, env, ctx) {
         // Handle CORS preflight requests
@@ -100,6 +69,7 @@ async function handleApiRequest(request, env, url) {
                 version: '3.0.0',
                 status: 'running',
                 environment: 'production',
+                database: 'Cloudflare D1',
                 endpoints: {
                     health: '/api/health',
                     init: 'POST /api/init',
@@ -114,7 +84,7 @@ async function handleApiRequest(request, env, url) {
                     'A/B day scheduling',
                     'Event management',
                     'Grade-level materials',
-                    'Auto-reconnecting database pool'
+                    'Serverless D1 database'
                 ]
             });
         }
@@ -122,17 +92,14 @@ async function handleApiRequest(request, env, url) {
         // Health check
         if (pathname === '/api/health') {
             try {
-                const activePool = ensurePoolExists(env);
-                const client = await activePool.connect();
-                const result = await client.query('SELECT NOW() as timestamp, version() as db_version');
-                client.release();
-
+                const result = await env.DB.prepare('SELECT datetime("now") as timestamp').first();
+                
                 return corsResponse({ 
                     status: 'healthy', 
                     message: 'Database connected',
                     connected: true,
-                    timestamp: result.rows[0].timestamp,
-                    database: 'PostgreSQL',
+                    timestamp: result?.timestamp,
+                    database: 'Cloudflare D1',
                     environment: 'production'
                 });
             } catch (error) {
@@ -148,7 +115,7 @@ async function handleApiRequest(request, env, url) {
 
         // Initialize database
         if (pathname === '/api/init' && method === 'POST') {
-            return handleDatabaseInit(request, env);
+            return handleDatabaseInit(env);
         }
 
         // Day schedules routes
@@ -221,134 +188,91 @@ async function handleApiRequest(request, env, url) {
     }
 }
 
-async function handleDatabaseInit(request, env) {
+async function handleDatabaseInit(env) {
     try {
-        const body = await request.json().catch(() => ({}));
-        const dbUrl = env.DATABASE_URL || body.dbUrl;
+        console.log('Initializing database schema...');
 
-        if (!dbUrl) {
-            return corsResponse({ 
-                error: 'Database URL is required. Set DATABASE_URL environment variable or provide in request.',
-                hasEnvVar: !!env.DATABASE_URL
-            }, 400);
-        }
-
-        console.log('Initializing database connection...');
-        
-        if (!pool) {
-            pool = initializePool(env);
-        }
-
-        const client = await pool.connect();
-        console.log('Database connection successful!');
-
-        // Create tables
-        console.log('Creating/updating database schema...');
-
-        await client.query(`
+        // Create tables using D1
+        await env.DB.prepare(`
             CREATE TABLE IF NOT EXISTS day_schedules (
-                date DATE PRIMARY KEY,
-                schedule VARCHAR(1) NOT NULL CHECK (schedule IN ('A', 'B')),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                date TEXT PRIMARY KEY,
+                schedule TEXT NOT NULL CHECK (schedule IN ('A', 'B')),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        `);
+        `).run();
 
-        await client.query(`
+        await env.DB.prepare(`
             CREATE TABLE IF NOT EXISTS day_types (
-                date DATE PRIMARY KEY,
-                type VARCHAR(50) NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                date TEXT PRIMARY KEY,
+                type TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        `);
+        `).run();
 
-        await client.query(`
+        await env.DB.prepare(`
             CREATE TABLE IF NOT EXISTS events (
-                id SERIAL PRIMARY KEY,
-                school VARCHAR(10) NOT NULL CHECK (school IN ('wlhs', 'wvhs')),
-                date DATE NOT NULL,
-                title VARCHAR(255) NOT NULL,
-                department VARCHAR(50),
-                time TIME,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                school TEXT NOT NULL CHECK (school IN ('wlhs', 'wvhs')),
+                date TEXT NOT NULL,
+                title TEXT NOT NULL,
+                department TEXT,
+                time TEXT,
                 description TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        `);
+        `).run();
 
-        await client.query(`
+        await env.DB.prepare(`
             CREATE TABLE IF NOT EXISTS materials (
-                id SERIAL PRIMARY KEY,
-                school VARCHAR(10) NOT NULL CHECK (school IN ('wlhs', 'wvhs')),
-                date DATE NOT NULL,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                school TEXT NOT NULL CHECK (school IN ('wlhs', 'wvhs')),
+                date TEXT NOT NULL,
                 grade_level INTEGER NOT NULL CHECK (grade_level BETWEEN 9 AND 12),
-                title VARCHAR(255) NOT NULL,
+                title TEXT NOT NULL,
                 link TEXT NOT NULL,
                 description TEXT DEFAULT '',
                 password TEXT DEFAULT '',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        `);
+        `).run();
 
         // Create indexes
-        await client.query(`CREATE INDEX IF NOT EXISTS idx_events_school_date ON events(school, date)`);
-        await client.query(`CREATE INDEX IF NOT EXISTS idx_materials_school_date_grade ON materials(school, date, grade_level)`);
-        await client.query(`CREATE INDEX IF NOT EXISTS idx_events_date ON events(date)`);
-        await client.query(`CREATE INDEX IF NOT EXISTS idx_materials_date ON materials(date)`);
-        await client.query(`CREATE INDEX IF NOT EXISTS idx_day_schedules_date ON day_schedules(date)`);
-        await client.query(`CREATE INDEX IF NOT EXISTS idx_day_types_date ON day_types(date)`);
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_events_school_date ON events(school, date)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_materials_school_date_grade ON materials(school, date, grade_level)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_events_date ON events(date)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_materials_date ON materials(date)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_day_schedules_date ON day_schedules(date)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_day_types_date ON day_types(date)`).run();
 
         console.log('Database schema initialized successfully!');
-        client.release();
 
         return corsResponse({ 
             message: 'Database initialized successfully',
             tables: ['day_schedules', 'day_types', 'events', 'materials'],
             features: ['password-protected materials', 'multi-school support', 'performance indexes'],
+            database: 'Cloudflare D1',
             environment: 'production',
             timestamp: new Date().toISOString()
         });
 
     } catch (error) {
         console.error('Database initialization error:', error);
-        
-        let errorMessage = error.message;
-        let suggestions = [];
-        
-        if (error.code === 'ENOTFOUND') {
-            errorMessage = 'Database host not found. Check your connection string.';
-            suggestions.push('Verify DATABASE_URL is correct');
-        } else if (error.code === 'ECONNREFUSED') {
-            errorMessage = 'Connection refused. Database may not be running.';
-            suggestions.push('Check if database is active');
-        } else if (error.code === '28P01') {
-            errorMessage = 'Authentication failed. Check credentials.';
-            suggestions.push('Verify username and password in DATABASE_URL');
-        } else if (error.code === '3D000') {
-            errorMessage = 'Database does not exist.';
-            suggestions.push('Check database name in connection string');
-        }
-
         return corsResponse({ 
-            error: errorMessage,
-            code: error.code,
-            suggestions,
-            hasEnvVar: !!env.DATABASE_URL
+            error: 'Database initialization failed: ' + error.message
         }, 500);
     }
 }
 
 async function handleGetDaySchedules(env) {
     try {
-        const activePool = ensurePoolExists(env);
-        const client = await activePool.connect();
-        const result = await client.query('SELECT date, schedule FROM day_schedules ORDER BY date');
-        client.release();
+        const result = await env.DB.prepare('SELECT date, schedule FROM day_schedules ORDER BY date').all();
 
-        const schedules = result.rows.map(row => ({
-            date: formatDate(row.date),
+        const schedules = result.results.map(row => ({
+            date: row.date,
             schedule: row.schedule
         }));
 
@@ -361,7 +285,6 @@ async function handleGetDaySchedules(env) {
 
 async function handlePostDaySchedule(request, env) {
     try {
-        const activePool = ensurePoolExists(env);
         const { date, schedule } = await request.json();
 
         if (!date) {
@@ -369,25 +292,20 @@ async function handlePostDaySchedule(request, env) {
         }
 
         const formattedDate = formatDate(date);
-        const client = await activePool.connect();
 
         if (!schedule || schedule === null) {
-            await client.query('DELETE FROM day_schedules WHERE date = $1', [formattedDate]);
+            await env.DB.prepare('DELETE FROM day_schedules WHERE date = ?').bind(formattedDate).run();
         } else {
             if (!['A', 'B'].includes(schedule)) {
-                client.release();
                 return corsResponse({ error: 'Schedule must be A or B' }, 400);
             }
 
-            await client.query(`
-                INSERT INTO day_schedules (date, schedule, updated_at) 
-                VALUES ($1, $2, CURRENT_TIMESTAMP)
-                ON CONFLICT (date) 
-                DO UPDATE SET schedule = $2, updated_at = CURRENT_TIMESTAMP
-            `, [formattedDate, schedule]);
+            await env.DB.prepare(`
+                INSERT OR REPLACE INTO day_schedules (date, schedule, updated_at) 
+                VALUES (?, ?, datetime('now'))
+            `).bind(formattedDate, schedule).run();
         }
 
-        client.release();
         return corsResponse({ 
             success: true, 
             date: formattedDate, 
@@ -401,13 +319,10 @@ async function handlePostDaySchedule(request, env) {
 
 async function handleGetDayTypes(env) {
     try {
-        const activePool = ensurePoolExists(env);
-        const client = await activePool.connect();
-        const result = await client.query('SELECT date, type FROM day_types ORDER BY date');
-        client.release();
+        const result = await env.DB.prepare('SELECT date, type FROM day_types ORDER BY date').all();
 
-        const types = result.rows.map(row => ({
-            date: formatDate(row.date),
+        const types = result.results.map(row => ({
+            date: row.date,
             type: row.type
         }));
 
@@ -420,7 +335,6 @@ async function handleGetDayTypes(env) {
 
 async function handlePostDayType(request, env) {
     try {
-        const activePool = ensurePoolExists(env);
         const { date, type } = await request.json();
 
         if (!date) {
@@ -428,20 +342,16 @@ async function handlePostDayType(request, env) {
         }
 
         const formattedDate = formatDate(date);
-        const client = await activePool.connect();
 
         if (!type || type === null) {
-            await client.query('DELETE FROM day_types WHERE date = $1', [formattedDate]);
+            await env.DB.prepare('DELETE FROM day_types WHERE date = ?').bind(formattedDate).run();
         } else {
-            await client.query(`
-                INSERT INTO day_types (date, type, updated_at) 
-                VALUES ($1, $2, CURRENT_TIMESTAMP)
-                ON CONFLICT (date) 
-                DO UPDATE SET type = $2, updated_at = CURRENT_TIMESTAMP
-            `, [formattedDate, type]);
+            await env.DB.prepare(`
+                INSERT OR REPLACE INTO day_types (date, type, updated_at) 
+                VALUES (?, ?, datetime('now'))
+            `).bind(formattedDate, type).run();
         }
 
-        client.release();
         return corsResponse({ 
             success: true, 
             date: formattedDate, 
@@ -455,7 +365,6 @@ async function handlePostDayType(request, env) {
 
 async function handleGetEvents(request, env, url) {
     try {
-        const activePool = ensurePoolExists(env);
         const school = url.searchParams.get('school');
 
         if (!school) {
@@ -466,19 +375,11 @@ async function handleGetEvents(request, env, url) {
             return corsResponse({ error: 'School must be wlhs or wvhs' }, 400);
         }
 
-        const client = await activePool.connect();
-        const result = await client.query(
-            'SELECT id, school, date, title, department, time, description, created_at, updated_at FROM events WHERE school = $1 ORDER BY date, time, id',
-            [school]
-        );
-        client.release();
+        const result = await env.DB.prepare(
+            'SELECT id, school, date, title, department, time, description, created_at, updated_at FROM events WHERE school = ? ORDER BY date, time, id'
+        ).bind(school).all();
 
-        const events = result.rows.map(row => ({
-            ...row,
-            date: formatDate(row.date)
-        }));
-
-        return corsResponse(events);
+        return corsResponse(result.results);
     } catch (error) {
         console.error('Error fetching events:', error);
         return corsResponse({ error: error.message }, 500);
@@ -487,7 +388,6 @@ async function handleGetEvents(request, env, url) {
 
 async function handlePostEvent(request, env) {
     try {
-        const activePool = ensurePoolExists(env);
         const { school, date, title, department, time, description } = await request.json();
 
         if (!school || !date || !title) {
@@ -499,22 +399,18 @@ async function handlePostEvent(request, env) {
         }
 
         const formattedDate = formatDate(date);
-        const client = await activePool.connect();
 
-        const result = await client.query(`
+        const result = await env.DB.prepare(`
             INSERT INTO events (school, date, title, department, time, description)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, school, date, title, department, time, description, created_at, updated_at
-        `, [school, formattedDate, title, department || null, time || null, description || '']);
+            VALUES (?, ?, ?, ?, ?, ?)
+        `).bind(school, formattedDate, title, department || null, time || null, description || '').run();
 
-        client.release();
+        // Get the inserted record
+        const newEvent = await env.DB.prepare(
+            'SELECT id, school, date, title, department, time, description, created_at, updated_at FROM events WHERE id = ?'
+        ).bind(result.meta.last_row_id).first();
 
-        const event = {
-            ...result.rows[0],
-            date: formatDate(result.rows[0].date)
-        };
-
-        return corsResponse(event);
+        return corsResponse(newEvent);
     } catch (error) {
         console.error('Error creating event:', error);
         return corsResponse({ error: error.message }, 500);
@@ -523,34 +419,27 @@ async function handlePostEvent(request, env) {
 
 async function handlePutEvent(request, env, eventId) {
     try {
-        const activePool = ensurePoolExists(env);
         const { title, department, time, description } = await request.json();
 
         if (!title) {
             return corsResponse({ error: 'Title is required' }, 400);
         }
 
-        const client = await activePool.connect();
-
-        const result = await client.query(`
+        await env.DB.prepare(`
             UPDATE events 
-            SET title = $1, department = $2, time = $3, description = $4, updated_at = CURRENT_TIMESTAMP
-            WHERE id = $5
-            RETURNING id, school, date, title, department, time, description, created_at, updated_at
-        `, [title, department || null, time || null, description || '', eventId]);
+            SET title = ?, department = ?, time = ?, description = ?, updated_at = datetime('now')
+            WHERE id = ?
+        `).bind(title, department || null, time || null, description || '', eventId).run();
 
-        client.release();
+        const updatedEvent = await env.DB.prepare(
+            'SELECT id, school, date, title, department, time, description, created_at, updated_at FROM events WHERE id = ?'
+        ).bind(eventId).first();
 
-        if (result.rows.length === 0) {
+        if (!updatedEvent) {
             return corsResponse({ error: 'Event not found' }, 404);
         }
 
-        const event = {
-            ...result.rows[0],
-            date: formatDate(result.rows[0].date)
-        };
-
-        return corsResponse(event);
+        return corsResponse(updatedEvent);
     } catch (error) {
         console.error('Error updating event:', error);
         return corsResponse({ error: error.message }, 500);
@@ -559,13 +448,9 @@ async function handlePutEvent(request, env, eventId) {
 
 async function handleDeleteEvent(env, eventId) {
     try {
-        const activePool = ensurePoolExists(env);
-        const client = await activePool.connect();
+        const result = await env.DB.prepare('DELETE FROM events WHERE id = ?').bind(eventId).run();
 
-        const result = await client.query('DELETE FROM events WHERE id = $1 RETURNING id', [eventId]);
-        client.release();
-
-        if (result.rows.length === 0) {
+        if (result.changes === 0) {
             return corsResponse({ error: 'Event not found' }, 404);
         }
 
@@ -578,7 +463,6 @@ async function handleDeleteEvent(env, eventId) {
 
 async function handleGetMaterials(request, env, url) {
     try {
-        const activePool = ensurePoolExists(env);
         const school = url.searchParams.get('school');
 
         if (!school) {
@@ -589,40 +473,11 @@ async function handleGetMaterials(request, env, url) {
             return corsResponse({ error: 'School must be wlhs or wvhs' }, 400);
         }
 
-        const client = await activePool.connect();
+        const result = await env.DB.prepare(
+            'SELECT id, school, date, grade_level, title, link, description, password, created_at, updated_at FROM materials WHERE school = ? ORDER BY date, grade_level, id'
+        ).bind(school).all();
 
-        try {
-            const result = await client.query(
-                'SELECT id, school, date, grade_level, title, link, description, password, created_at, updated_at FROM materials WHERE school = $1 ORDER BY date, grade_level, id',
-                [school]
-            );
-            
-            client.release();
-
-            const materials = result.rows.map(row => ({
-                ...row,
-                date: formatDate(row.date),
-                password: row.password || ''
-            }));
-
-            return corsResponse(materials);
-        } catch (passwordError) {
-            // If password column doesn't exist, try without it
-            const result = await client.query(
-                'SELECT id, school, date, grade_level, title, link, description, created_at, updated_at FROM materials WHERE school = $1 ORDER BY date, grade_level, id',
-                [school]
-            );
-            
-            client.release();
-
-            const materials = result.rows.map(row => ({
-                ...row,
-                date: formatDate(row.date),
-                password: ''
-            }));
-
-            return corsResponse(materials);
-        }
+        return corsResponse(result.results);
     } catch (error) {
         console.error('Error fetching materials:', error);
         return corsResponse({ error: error.message }, 500);
@@ -631,7 +486,6 @@ async function handleGetMaterials(request, env, url) {
 
 async function handlePostMaterial(request, env) {
     try {
-        const activePool = ensurePoolExists(env);
         const { school, date, grade_level, title, link, description, password } = await request.json();
 
         if (!school || !date || !grade_level || !title || !link) {
@@ -647,41 +501,18 @@ async function handlePostMaterial(request, env) {
         }
 
         const formattedDate = formatDate(date);
-        const client = await activePool.connect();
 
-        try {
-            const result = await client.query(`
-                INSERT INTO materials (school, date, grade_level, title, link, description, password)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                RETURNING id, school, date, grade_level, title, link, description, password, created_at, updated_at
-            `, [school, formattedDate, parseInt(grade_level), title, link, description || '', password || '']);
+        const result = await env.DB.prepare(`
+            INSERT INTO materials (school, date, grade_level, title, link, description, password)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).bind(school, formattedDate, parseInt(grade_level), title, link, description || '', password || '').run();
 
-            client.release();
+        // Get the inserted record
+        const newMaterial = await env.DB.prepare(
+            'SELECT id, school, date, grade_level, title, link, description, password, created_at, updated_at FROM materials WHERE id = ?'
+        ).bind(result.meta.last_row_id).first();
 
-            const material = {
-                ...result.rows[0],
-                date: formatDate(result.rows[0].date)
-            };
-
-            return corsResponse(material);
-        } catch (passwordError) {
-            // If password column doesn't exist, create without it
-            const result = await client.query(`
-                INSERT INTO materials (school, date, grade_level, title, link, description)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                RETURNING id, school, date, grade_level, title, link, description, created_at, updated_at
-            `, [school, formattedDate, parseInt(grade_level), title, link, description || '']);
-
-            client.release();
-
-            const material = {
-                ...result.rows[0],
-                date: formatDate(result.rows[0].date),
-                password: ''
-            };
-
-            return corsResponse(material);
-        }
+        return corsResponse(newMaterial);
     } catch (error) {
         console.error('Error creating material:', error);
         return corsResponse({ error: error.message }, 500);
@@ -690,58 +521,27 @@ async function handlePostMaterial(request, env) {
 
 async function handlePutMaterial(request, env, materialId) {
     try {
-        const activePool = ensurePoolExists(env);
         const { title, link, description, password } = await request.json();
 
         if (!title || !link) {
             return corsResponse({ error: 'Title and link are required' }, 400);
         }
 
-        const client = await activePool.connect();
+        await env.DB.prepare(`
+            UPDATE materials 
+            SET title = ?, link = ?, description = ?, password = ?, updated_at = datetime('now')
+            WHERE id = ?
+        `).bind(title, link, description || '', password || '', materialId).run();
 
-        try {
-            const result = await client.query(`
-                UPDATE materials 
-                SET title = $1, link = $2, description = $3, password = $4, updated_at = CURRENT_TIMESTAMP
-                WHERE id = $5
-                RETURNING id, school, date, grade_level, title, link, description, password, created_at, updated_at
-            `, [title, link, description || '', password || '', materialId]);
+        const updatedMaterial = await env.DB.prepare(
+            'SELECT id, school, date, grade_level, title, link, description, password, created_at, updated_at FROM materials WHERE id = ?'
+        ).bind(materialId).first();
 
-            client.release();
-
-            if (result.rows.length === 0) {
-                return corsResponse({ error: 'Material not found' }, 404);
-            }
-
-            const material = {
-                ...result.rows[0],
-                date: formatDate(result.rows[0].date)
-            };
-
-            return corsResponse(material);
-        } catch (passwordError) {
-            // If password column doesn't exist, update without it
-            const result = await client.query(`
-                UPDATE materials 
-                SET title = $1, link = $2, description = $3, updated_at = CURRENT_TIMESTAMP
-                WHERE id = $4
-                RETURNING id, school, date, grade_level, title, link, description, created_at, updated_at
-            `, [title, link, description || '', materialId]);
-
-            client.release();
-
-            if (result.rows.length === 0) {
-                return corsResponse({ error: 'Material not found' }, 404);
-            }
-
-            const material = {
-                ...result.rows[0],
-                date: formatDate(result.rows[0].date),
-                password: ''
-            };
-
-            return corsResponse(material);
+        if (!updatedMaterial) {
+            return corsResponse({ error: 'Material not found' }, 404);
         }
+
+        return corsResponse(updatedMaterial);
     } catch (error) {
         console.error('Error updating material:', error);
         return corsResponse({ error: error.message }, 500);
@@ -750,13 +550,9 @@ async function handlePutMaterial(request, env, materialId) {
 
 async function handleDeleteMaterial(env, materialId) {
     try {
-        const activePool = ensurePoolExists(env);
-        const client = await activePool.connect();
+        const result = await env.DB.prepare('DELETE FROM materials WHERE id = ?').bind(materialId).run();
 
-        const result = await client.query('DELETE FROM materials WHERE id = $1 RETURNING id', [materialId]);
-        client.release();
-
-        if (result.rows.length === 0) {
+        if (result.changes === 0) {
             return corsResponse({ error: 'Material not found' }, 404);
         }
 
