@@ -13,3 +13,12 @@ database_id = "7c57090d-4305-4844-8fcf-04a31572e1dc"
 
 [vars]
 NODE_ENV = "production"
+
+# Add your custom domain routes
+[[routes]]
+pattern = "wlwvlife.org/*"
+zone_name = "wlwvlife.org"
+
+[[routes]]
+pattern = "www.wlwvlife.org/*" 
+zone_name = "wlwvlife.org"
