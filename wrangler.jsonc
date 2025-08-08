@@ -12,8 +12,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "worker-bee-database",
-      "database_id": "2b9b6354-5b76-4414-9124-9fc4ab047acf"
+      "database_name": "wlwv-calendar-for-worker-bee",
+      "database_id": "7c57090d-4305-4844-8fcf-04a31572e1dc"
     }
   ],
   "observability": {
