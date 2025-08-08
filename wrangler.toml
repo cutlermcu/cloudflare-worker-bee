@@ -1,4 +1,4 @@
-name = "wlwv-calendar-for-worker-bee"
+name = "worker-bee"
 main = "src/index.js"
 compatibility_date = "2025-08-08"
 
