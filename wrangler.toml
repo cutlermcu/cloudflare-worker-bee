@@ -1,0 +1,15 @@
+name = "wlwv-calendar-for-worker-bee"
+main = "src/index.js"
+compatibility_date = "2025-08-08"
+
+[assets]
+directory = "./dist"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "wlwv-calendar-for-worker-bee"
+database_id = "7c57090d-4305-4844-8fcf-04a31572e1dc"
+
+[vars]
+NODE_ENV = "production"
